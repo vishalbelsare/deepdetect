@@ -207,6 +207,13 @@ mask values unless `--skip-mask-validation` is passed. With
 `--dataset-check none`, the CLI emits a skipped dataset-check event and leaves
 dataset validation to the DeepDetect backend.
 
+For PyTorch workers, `measure.flops` and service `model_stats.flops` are
+estimated from the first real model forward pass using the native PyTorch
+profiler. The value is reported per sample in that model forward. For top-down
+pose workers this means per cropped instance; for full-image models it means
+per input image. Unsupported operators are non-fatal and leave the value
+unavailable until a worker reports a supported estimate.
+
 ### Visdom Metric Sink
 
 Training can also stream scalar losses and metrics to Visdom:

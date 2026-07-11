@@ -44,7 +44,7 @@ namespace dd
       {
         info->description = "Number of flops of the model";
       }
-      DTO_FIELD(Int32, flops);
+      DTO_FIELD(Int64, flops);
 
       DTO_FIELD_INFO(params)
       {

@@ -45,6 +45,7 @@ namespace dd
     bool process_worker_request(const std::string &message);
     void process_metric(const rapidjson::Value &payload);
     void process_status(const rapidjson::Value &payload);
+    void process_log(const rapidjson::Value &payload);
     void process_failure(const rapidjson::Value &payload);
     APIData request_params(const APIData &ad) const;
     APIData train_request(const APIData &ad);

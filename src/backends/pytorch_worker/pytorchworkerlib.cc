@@ -10,7 +10,9 @@
 #include "backends/pytorch_worker/pytorchworkerinputconns.h"
 #include "supervisedoutputconnector.h"
 
+#include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <rapidjson/document.h>
 
@@ -30,6 +32,55 @@ namespace dd
                             const std::string &fallback = "")
     {
       return value.IsString() ? value.GetString() : fallback;
+    }
+
+    struct APIDataNumberVisitor
+    {
+      double &out;
+
+      bool operator()(const double &value) const
+      {
+        out = value;
+        return true;
+      }
+
+      bool operator()(const int &value) const
+      {
+        out = static_cast<double>(value);
+        return true;
+      }
+
+      bool operator()(const long int &value) const
+      {
+        out = static_cast<double>(value);
+        return true;
+      }
+
+      bool operator()(const long long int &value) const
+      {
+        out = static_cast<double>(value);
+        return true;
+      }
+
+      template <typename T> bool operator()(const T &) const
+      {
+        return false;
+      }
+    };
+
+    bool api_number(const APIData &ad, const std::string &key, double &out)
+    {
+      if (!ad.has(key))
+        return false;
+      return mapbox::util::apply_visitor(APIDataNumberVisitor{ out },
+                                         ad.get(key));
+    }
+
+    std::int64_t rounded_positive_int64(double value)
+    {
+      if (!std::isfinite(value) || value <= 0.0)
+        return 0;
+      return static_cast<std::int64_t>(std::llround(value));
     }
 
     bool debug_enabled()
@@ -356,10 +407,14 @@ namespace dd
       process_metric(payload);
     else if (event == "status" && payload.IsObject())
       process_status(payload);
+    else if (event == "log" && payload.IsObject())
+      process_log(payload);
     else if (event == "failure" && payload.IsObject())
       process_failure(payload);
     else if (event == "train_result")
       {
+        if (payload.IsObject())
+          process_status(payload);
         finished = true;
         std::string state = payload.IsObject() && payload.HasMember("status")
                                 ? json_string(payload["status"], "finished")
@@ -408,10 +463,58 @@ namespace dd
             this->add_status_payload(name, status_payload);
             continue;
           }
+        if (name == "flops")
+          {
+            double flops = 0.0;
+            if (json_number(it->value, flops))
+              {
+                const std::int64_t rounded = rounded_positive_int64(flops);
+                if (rounded > 0)
+                  this->_model_flops = rounded;
+              }
+            continue;
+          }
+        if (name == "model_stats" && it->value.IsObject()
+            && it->value.HasMember("flops"))
+          {
+            double flops = 0.0;
+            if (json_number(it->value["flops"], flops))
+              {
+                const std::int64_t rounded = rounded_positive_int64(flops);
+                if (rounded > 0)
+                  this->_model_flops = rounded;
+              }
+            continue;
+          }
         double value = 0.0;
         if (json_number(it->value, value))
           this->add_meas(name, value);
       }
+  }
+
+  template <class TInputConnectorStrategy, class TOutputConnectorStrategy,
+            class TMLModel>
+  void PytorchWorkerLib<TInputConnectorStrategy, TOutputConnectorStrategy,
+                        TMLModel>::process_log(const rapidjson::Value &payload)
+  {
+    if (!this->_logger)
+      return;
+    std::string level = payload.HasMember("level")
+                            ? json_string(payload["level"], "info")
+                            : "info";
+    std::string message = payload.HasMember("message")
+                              ? json_string(payload["message"], "")
+                              : "";
+    if (message.empty())
+      return;
+    if (level == "debug")
+      this->_logger->debug(message);
+    else if (level == "warning" || level == "warn")
+      this->_logger->warn(message);
+    else if (level == "error")
+      this->_logger->error(message);
+    else
+      this->_logger->info(message);
   }
 
   template <class TInputConnectorStrategy, class TOutputConnectorStrategy,
@@ -485,6 +588,38 @@ namespace dd
     if (!prepared.empty())
       this->_inputc.cleanup_inline_detection_pull_session();
     APIData result = response.getobj("result");
+    if (result.has("model_stats"))
+      {
+        APIData stats = result.getobj("model_stats");
+        double flops = 0.0;
+        if (api_number(stats, "flops", flops))
+          {
+            const std::int64_t rounded = rounded_positive_int64(flops);
+            if (rounded > 0)
+              this->_model_flops = rounded;
+          }
+      }
+    else
+      {
+        double flops = 0.0;
+        if (api_number(result, "flops", flops))
+          {
+            const std::int64_t rounded = rounded_positive_int64(flops);
+            if (rounded > 0)
+              this->_model_flops = rounded;
+          }
+      }
+    std::string pending_message;
+    while (_worker->read_message(pending_message, 0))
+      {
+        bool finished = false;
+        int pending_status = 0;
+        APIData pending_out;
+        if (process_worker_request(pending_message))
+          continue;
+        process_worker_message(pending_message, finished, pending_status,
+                               pending_out);
+      }
     std::vector<APIData> results = result.getv("results");
 
     TOutputConnectorStrategy outputc(this->_outputc);

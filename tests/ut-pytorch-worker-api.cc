@@ -839,6 +839,75 @@ TEST(pytorchworkerapi, reference_detector_trains_tiny_detection_fixture)
   cleanup_repo(fixture.root);
 }
 
+TEST(pytorchworkerapi, worker_status_updates_flops_measure)
+{
+  configure_pythonpath();
+  JsonAPI japi;
+  const std::string service = "pytorchworker_flops_status";
+  const std::string repo = repo_path(service);
+  prepare_repo(repo);
+  const std::filesystem::path worker_path
+      = std::filesystem::path(repo) / "worker.py";
+  write_text_file(worker_path,
+                  R"PY(from __future__ import annotations
+
+from deepdetect.pytorch_worker.sdk import DeepDetectWorkerBase
+
+
+class DeepDetectWorker(DeepDetectWorkerBase):
+    def configure(self, context):
+        super().configure(context)
+        import torch
+
+        self.torch = torch
+        self.model = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 4, kernel_size=3, padding=1),
+            torch.nn.Flatten(),
+            torch.nn.Linear(4 * 8 * 8, 2),
+        )
+        return {}
+
+    def train(self, params, *, reporter, cancellation):
+        del params, cancellation
+        output = self.model(self.torch.randn(2, 3, 8, 8))
+        reporter.status(iteration=1, train_loss=float(output.abs().mean().item()))
+        return {"status": "finished"}
+
+    def predict(self, params):
+        del params
+        self.model(self.torch.randn(2, 3, 8, 8))
+        return {"results": []}
+)PY");
+
+  ASSERT_EQ(created_str,
+            japi.jrender(japi.service_create(
+                service, create_request(
+                             repo, ",\"entrypoint\":\"" + worker_path.string()
+                                       + "\",\"class\":\"DeepDetectWorker\","
+                                         "\"gpu\":false"))));
+
+  JDoc train = japi.service_train(train_request(service, 1, true));
+  ASSERT_EQ(201, status_code(train)) << japi.jrender(train);
+  ASSERT_TRUE(train.HasMember("head")) << japi.jrender(train);
+  ASSERT_TRUE(train["head"].HasMember("job")) << japi.jrender(train);
+  const int job = train["head"]["job"].GetInt();
+
+  JDoc status = poll_until_terminal(japi, service, job, 120);
+  ASSERT_STREQ("finished", status["head"]["status"].GetString())
+      << japi.jrender(status);
+  ASSERT_TRUE(status.HasMember("body")) << japi.jrender(status);
+  ASSERT_TRUE(status["body"].HasMember("measure")) << japi.jrender(status);
+  ASSERT_TRUE(status["body"]["measure"].HasMember("flops"))
+      << japi.jrender(status);
+  ASSERT_TRUE(status["body"]["measure"]["flops"].IsNumber())
+      << japi.jrender(status);
+  ASSERT_GT(status["body"]["measure"]["flops"].GetDouble(), 0.0)
+      << japi.jrender(status);
+
+  ASSERT_EQ(ok_str, japi.jrender(japi.service_delete(service, "")));
+  cleanup_repo(repo);
+}
+
 TEST(pytorchworkerapi, reference_detector_trains_inline_tensor_batches)
 {
   configure_pythonpath();

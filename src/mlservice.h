@@ -237,7 +237,7 @@ namespace dd
       // model info
       serv_dto->model_stats = DTO::ServiceModel::createShared();
       if (this->_model_flops != 0)
-        serv_dto->model_stats->params = this->_model_flops;
+        serv_dto->model_stats->flops = this->_model_flops;
       if (this->_model_params != 0)
         serv_dto->model_stats->params = this->_model_params;
       if (this->_model_frozen_params != 0)
