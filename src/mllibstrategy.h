@@ -23,6 +23,7 @@
 #define MLLIBSTRATEGY_H
 
 #include <atomic>
+#include <cstdint>
 #include <exception>
 #include <mutex>
 
@@ -422,8 +423,8 @@ namespace dd
 
     std::shared_ptr<spdlog::logger> _logger; /**< mllib logger. */
 
-    long int _model_flops = 0;  /**< model flops. */
-    long int _model_params = 0; /**< number of parameters in the model. */
+    std::int64_t _model_flops = 0; /**< model flops. */
+    long int _model_params = 0;    /**< number of parameters in the model. */
     long int _model_frozen_params
         = 0; /**< number of frozen parameters in the model. */
     long int _mem_used_train = 0; /**< amount  of memory used. */

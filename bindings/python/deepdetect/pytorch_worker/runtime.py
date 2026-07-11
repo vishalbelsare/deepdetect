@@ -160,7 +160,10 @@ class WorkerRuntime:
         )
 
     def _predict(self, params: dict[str, Any]) -> dict[str, Any]:
-        return validate_prediction_result(self.worker.predict(params))
+        result = validate_prediction_result(self.worker.predict(params))
+        self._attach_model_stats(result)
+        self._emit_model_flops_warning()
+        return result
 
     def _load_worker(self, params: dict[str, Any]) -> Any:
         mllib = params.get("mllib", {}) if isinstance(params, dict) else {}
@@ -222,7 +225,42 @@ class WorkerRuntime:
         self.send({"id": message_id, "error": error})
 
     def event(self, name: str, payload: dict[str, Any]) -> None:
+        if name in {"status", "train_result"}:
+            payload = dict(payload)
+            self._attach_model_stats(payload)
+            self._emit_model_flops_warning()
         self.send({"event": name, "payload": payload})
+
+    def _attach_model_stats(self, payload: dict[str, Any]) -> None:
+        flops = self._current_model_flops()
+        if flops is None:
+            return
+        if not _positive_number(payload.get("flops")):
+            payload["flops"] = int(flops)
+        model_stats = payload.setdefault("model_stats", {})
+        if isinstance(model_stats, dict):
+            if not _positive_number(model_stats.get("flops")):
+                model_stats["flops"] = int(flops)
+
+    def _emit_model_flops_warning(self) -> None:
+        if not isinstance(self.worker, DeepDetectWorkerBase):
+            return
+        warning = self.worker.pop_model_flops_warning()
+        if warning:
+            self.send(
+                {
+                    "event": "log",
+                    "payload": {
+                        "level": "warning",
+                        "message": warning,
+                    },
+                }
+            )
+
+    def _current_model_flops(self) -> int | None:
+        if not isinstance(self.worker, DeepDetectWorkerBase):
+            return None
+        return self.worker.model_flops()
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         with self._pending_condition:
@@ -315,6 +353,14 @@ def debug(message: str) -> None:
             file=sys.stderr,
             flush=True,
         )
+
+
+def _positive_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+    )
 
 
 def main() -> int:

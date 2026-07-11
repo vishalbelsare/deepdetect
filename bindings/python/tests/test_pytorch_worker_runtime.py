@@ -134,6 +134,92 @@ def test_protocol_roundtrip():
         right.close()
 
 
+def test_worker_base_records_first_forward_flops_per_sample():
+    torch = pytest.importorskip("torch")
+
+    worker = DeepDetectWorkerBase()
+    worker.model = torch.nn.Conv2d(3, 4, 3, padding=1)
+    worker.model(torch.randn(2, 3, 8, 8))
+
+    flops = worker.model_flops()
+    assert flops is not None
+    assert flops > 0
+    assert worker.pop_model_flops_warning() is None
+
+    worker.model(torch.randn(4, 3, 8, 8))
+    assert worker.model_flops() == flops
+
+
+def test_runtime_status_includes_model_flops():
+    torch = pytest.importorskip("torch")
+
+    runtime_sock, host_sock = socket_pair()
+    runtime = WorkerRuntime(runtime_sock)
+    runtime.worker = DeepDetectWorkerBase()
+    runtime.worker.model = torch.nn.Conv2d(3, 4, 3, padding=1)
+    runtime.worker.model(torch.randn(2, 3, 8, 8))
+    try:
+        runtime.event("status", {"iteration": 1})
+
+        message = read_frame(host_sock)
+        assert message["event"] == "status"
+        payload = message["payload"]
+        assert payload["iteration"] == 1
+        assert payload["flops"] > 0
+        assert payload["model_stats"]["flops"] == payload["flops"]
+    finally:
+        host_sock.close()
+        runtime_sock.close()
+
+
+def test_runtime_predict_result_includes_model_flops():
+    torch = pytest.importorskip("torch")
+
+    class FlopsPredictWorker(DeepDetectWorkerBase):
+        def predict(self, params):
+            if self.model is None:
+                self.model = torch.nn.Conv2d(3, 4, 3, padding=1)
+            self.model(torch.randn(2, 3, 8, 8))
+            return {"results": []}
+
+    runtime_sock, host_sock = socket_pair()
+    runtime = WorkerRuntime(runtime_sock)
+    runtime.worker = FlopsPredictWorker()
+    try:
+        result = runtime._predict({})
+
+        assert result["results"] == []
+        assert result["flops"] > 0
+        assert result["model_stats"]["flops"] == result["flops"]
+    finally:
+        host_sock.close()
+        runtime_sock.close()
+
+
+def test_runtime_emits_warning_when_model_flops_are_unavailable():
+    torch = pytest.importorskip("torch")
+
+    runtime_sock, host_sock = socket_pair()
+    runtime = WorkerRuntime(runtime_sock)
+    runtime.worker = DeepDetectWorkerBase()
+    runtime.worker.model = torch.nn.ReLU()
+    runtime.worker.model(torch.randn(2, 3, 8, 8))
+    try:
+        runtime.event("status", {"iteration": 1})
+
+        log_message = read_frame(host_sock)
+        assert log_message["event"] == "log"
+        assert log_message["payload"]["level"] == "warning"
+        assert "flops" in log_message["payload"]["message"]
+
+        status_message = read_frame(host_sock)
+        assert status_message["event"] == "status"
+        assert status_message["payload"] == {"iteration": 1}
+    finally:
+        host_sock.close()
+        runtime_sock.close()
+
+
 def test_runtime_routes_training_thread_connector_request():
     class ConnectorWorker(DeepDetectWorkerBase):
         def train(self, params, *, reporter, cancellation):

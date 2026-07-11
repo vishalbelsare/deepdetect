@@ -10,6 +10,8 @@ from numbers import Real
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .flops import ModelFlopsEstimator
+
 
 class WorkerSDKError(Exception):
     category = "internal_error"
@@ -169,6 +171,29 @@ class WorkerConnector:
 class DeepDetectWorkerBase:
     def __init__(self) -> None:
         self.context: WorkerContext | None = None
+        self._model: Any = None
+        self._flops_estimator: ModelFlopsEstimator | None = None
+
+    @property
+    def model(self) -> Any:
+        return self._model
+
+    @model.setter
+    def model(self, value: Any) -> None:
+        if self._flops_estimator is not None:
+            self._flops_estimator.close()
+        self._model = value
+        self._flops_estimator = ModelFlopsEstimator(value)
+
+    def model_flops(self) -> int | None:
+        if self._flops_estimator is None:
+            return None
+        return self._flops_estimator.flops
+
+    def pop_model_flops_warning(self) -> str | None:
+        if self._flops_estimator is None:
+            return None
+        return self._flops_estimator.pop_warning()
 
     def configure(self, context: WorkerContext) -> dict[str, Any]:
         self.context = context
